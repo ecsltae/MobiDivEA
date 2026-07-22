@@ -3,7 +3,7 @@
 Metadata extraction over ~600 Spanish BOE (*Boletín Oficial del Estado*)
 environmental-impact gazette documents, built for Maite's document-review task:
 **what species, what locations, and single-answer facts** (project location,
-fieldwork dates, ...) does each document mention. Designed to sit next to Paul's
+fieldwork dates, ...) does each document mention. Designed to sit next to 
 MobiDivEA triage system (`/classify`, Primary/Secondary evidence scoring) — that
 system classifies documents but does not enumerate taxa or answer free-text
 questions; this one does.
@@ -22,7 +22,7 @@ service/                 FastAPI service — the deployed deliverable
   README.md                full API docs, validation numbers, deployment steps
 qa_bert/                 training pipeline for the /ask model (not run automatically)
   PLAN.md                  design notes: why extractive QA, data sources, model choice
-  prepare_data.py          builds SQuAD-v2 training data (Paul's evidence spans +
+  prepare_data.py          builds SQuAD-v2 training data (triage evidence spans +
                            our extractors + LLM-teacher labels over questions.txt)
   train_qa.py              GPU fine-tune (HF AutoModelForQuestionAnswering)
   evaluate_qa.py           dev-set eval + no-answer threshold calibration
