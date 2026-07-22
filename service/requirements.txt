@@ -1,0 +1,7 @@
+# Standalone species extraction service.
+# The resolver itself (src/data/ott_resolver.py) is stdlib-only; rapidfuzz is an
+# optional speed-up for the fuzzy pass. ijson is only needed to (re)build the index.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+rapidfuzz>=3.0     # optional: faster fuzzy matching (difflib fallback if absent)
+ijson>=3.0         # only for building the OTT index

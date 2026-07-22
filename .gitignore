@@ -1,0 +1,19 @@
+# Generated training data (regenerate via qa_bert/prepare_data.py) — squad_train.json
+# (~200MB), squad_dev.json (~21MB), teacher.jsonl (~150MB, LLM-teacher labels).
+qa_bert/data/
+
+# Trained model checkpoints (regenerate via qa_bert/train_qa.py on GPU) — each run is
+# several hundred MB to a few GB. Keep only the small qa_bert/results/*.json eval
+# summaries, which are tracked.
+qa_bert/models/
+
+# Local OTT taxonomy dump + built SQLite index (2.4GB source + 1.0GB index) — see
+# service/README.md "Prerequisite: build the OTT index".
+service/ott_index.sqlite
+service/ott_v3.7.2.json
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store

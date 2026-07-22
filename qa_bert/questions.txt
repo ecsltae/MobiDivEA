@@ -1,0 +1,9 @@
+# Single-answer questions for the Spanish BERT extractive QA (one span per doc).
+# Format: question<TAB>theme.  Lines starting with # are ignored.
+# List questions (¿qué especies? / ¿qué localidades?) are NOT here — they are
+# answered by the deterministic extractors. The Resolution date is NOT here — it
+# is read from the JSON `publication_date` field.
+¿Cuál es la ubicación del proyecto?	project_location
+¿Cuándo se realizó el trabajo de campo?	fieldwork_dates
+¿Entre qué fechas se realizó el trabajo de campo?	fieldwork_dates
+¿Cuándo se inició el procedimiento de evaluación ambiental?	process_start
