@@ -74,7 +74,10 @@ def get_extractor() -> SpeciesExtractor:
 def get_loc_extractor() -> LocationExtractor:
     global _loc_extractor
     if _loc_extractor is None:
-        _loc_extractor = LocationExtractor()
+        # Gazetteer index location (mirrors SPECIES_QA_OTT_DB for species).
+        _loc_extractor = LocationExtractor(
+            geo_db=os.environ.get("SPECIES_QA_GEO_DB")
+        )
     return _loc_extractor
 
 
@@ -140,6 +143,15 @@ class ExtractRequest(BaseModel):
             "true → P=0.91, R=0.99 (recovers non-italicised species, adds noise)."
         ),
     )
+    verified_only: bool = Field(
+        default=False,
+        description=(
+            "Locations only: if true, return just the places confirmed in the "
+            "GeoNames gazetteer (canonical name + stable geonameid + admin "
+            "context), dropping unverified NER spans. Default false returns all, "
+            "with each carrying a `verified` flag."
+        ),
+    )
 
     def to_doc(self) -> Dict[str, Any]:
         if self.document is not None:
@@ -179,8 +191,14 @@ class ExtractResponse(BaseModel):
 
 
 class LocationItem(BaseModel):
-    name: str
-    type: str          # river | water_body | relief | protected_area | trail | province | municipality | place
+    name: str          # canonical GeoNames name when verified, else the raw NER span
+    type: str          # river | water_body | wetland | relief | pass | protected_area | forest | region | province | comarca | municipality | place
+    verified: bool     # confirmed against the GeoNames gazetteer
+    geonameid: Optional[str] = None    # stable id, e.g. "geonames:3120514"
+    province: Optional[str] = None     # ADM2 context, when known
+    region: Optional[str] = None       # ADM1 / comunidad autónoma, when known
+    match_type: Optional[str] = None   # exact | core | fuzzy (None if unverified)
+    confidence: Optional[float] = None
     count: int
     mentions: List[Mention]
 
@@ -188,6 +206,7 @@ class LocationItem(BaseModel):
 class LocationResponse(BaseModel):
     id: Optional[str] = Field(default=None, alias="_id")
     n_locations: int
+    n_verified: int
     locations: List[LocationItem]
 
     model_config = {"populate_by_name": True}
@@ -231,8 +250,10 @@ def health() -> dict:
 
 @app.post("/extract-locations", response_model=LocationResponse, tags=["Locations"])
 def extract_locations(req: ExtractRequest) -> dict:
-    """Answer "What locations?" — places extracted from the document via Spanish NER."""
-    return get_loc_extractor().extract(req.to_doc())
+    """Answer "What locations?" — places from Spanish NER, verified/normalized
+    against the local GeoNames gazetteer (canonical name, stable geonameid, type,
+    admin context). Set `verified_only` to drop unconfirmed spans."""
+    return get_loc_extractor().extract(req.to_doc(), verified_only=req.verified_only)
 
 
 @app.post("/extract-species", response_model=ExtractResponse, tags=["Species"])

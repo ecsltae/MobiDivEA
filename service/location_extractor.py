@@ -1,23 +1,45 @@
 """
 location_extractor.py — location extraction from a Spanish (BOE) document.
 
-Off-the-shelf multilingual NER (spaCy `es_core_news_md`) + light rule cleanup.
-There are NO gold location labels in the training data, so this is unsupervised:
-spaCy proposes LOC/MISC entities, we drop administrative/legal noise it mislabels
-as places, dedupe, and attach a coarse type (river / province / protected area /
-water body / relig / trail / place) plus offsets for GUI highlighting.
+Multilingual NER (spaCy `es_core_news_md`) for *recognition*, then a GeoNames
+gazetteer for *verification* — mirroring the species side (NER/candidates → OTT).
+There are NO gold location labels, so this stays unsupervised:
 
-This is deliberately simpler and noisier than the species side (which has the OTT
-backbone to verify against). A Spanish GeoNames gazetteer could later verify and
-normalize these the way OTT verifies species — see README roadmap.
+    1. recognition   spaCy proposes LOC spans.
+    2. pre-filter    drop administrative/legal noise, digit/parcel codes, stubs
+                     (cheap rules; also catches govt-body words like "Ministerio"
+                     that happen to collide with tiny hamlet names in GeoNames).
+    3. verify        resolve each span against the local GeoNames Spain gazetteer
+                     (`geonames_resolver.py`): confirmed places get a canonical
+                     name, a stable `geonameid`, an accurate `type` from the
+                     feature code, and admin context (province / comunidad).
+                     Unconfirmed spans are kept but flagged `verified=false`
+                     (no recall loss) — or dropped entirely with `verified_only`.
+    4. dedupe        by geonameid when verified, else by normalized name.
+
+The gazetteer is the location analogue of OTT for species. If the index isn't
+built/available, the extractor degrades gracefully to recognition + pre-filter
+(every location comes back `verified=false`).
 """
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional
+
+# Vendored gazetteer resolver, alongside this file.
+_THIS_DIR = str(Path(__file__).resolve().parent)
+if _THIS_DIR not in sys.path:
+    sys.path.insert(0, _THIS_DIR)
+try:
+    from geonames_resolver import GeoNamesResolver  # noqa: E402
+except Exception:  # pragma: no cover
+    GeoNamesResolver = None  # type: ignore
 
 
 def _strip_accents(s: str) -> str:
@@ -72,15 +94,27 @@ def _is_admin(name_norm: str) -> bool:
 
 @dataclass
 class LocationFinding:
-    name: str
+    name: str                       # canonical (GeoNames) name when verified, else raw
     type: str
     count: int
-    mentions: List[dict]     # [{text, start, end}]
+    mentions: List[dict]            # [{text, start, end}]
+    verified: bool = False
+    geonameid: Optional[str] = None
+    province: Optional[str] = None
+    region: Optional[str] = None
+    match_type: Optional[str] = None   # exact | core | fuzzy (gazetteer), None if not
+    confidence: Optional[float] = None
 
     def as_dict(self) -> dict:
         return {
             "name": self.name,
             "type": self.type,
+            "verified": self.verified,
+            "geonameid": self.geonameid,
+            "province": self.province,
+            "region": self.region,
+            "match_type": self.match_type,
+            "confidence": self.confidence,
             "count": self.count,
             "mentions": self.mentions,
         }
@@ -91,7 +125,13 @@ class LocationExtractor:
     # names ("Red Natura 2000") but are too noisy for v1; LOC only by default.
     _LABELS = {"LOC"}
 
-    def __init__(self, model: str = "es_core_news_md", labels: Optional[set] = None):
+    def __init__(
+        self,
+        model: str = "es_core_news_md",
+        labels: Optional[set] = None,
+        geo_db: Optional[str] = None,
+        verify: bool = True,
+    ):
         import spacy  # imported lazily so the species-only path pays nothing
 
         # Keep only what NER needs — much faster on long legal docs.
@@ -101,7 +141,15 @@ class LocationExtractor:
         self.nlp.max_length = 2_000_000
         self.labels = labels or self._LABELS
 
-    def extract(self, doc: dict) -> dict:
+        # Gazetteer verification backbone (optional; degrade gracefully if absent).
+        self.resolver = None
+        if verify and GeoNamesResolver is not None:
+            try:
+                self.resolver = GeoNamesResolver(geo_db)
+            except Exception as e:  # index not built / unreadable
+                print(f"[location_extractor] gazetteer disabled: {e}", flush=True)
+
+    def extract(self, doc: dict, verified_only: bool = False) -> dict:
         text = doc.get("text") or ""
         acc: Dict[str, LocationFinding] = {}
         for ent in self.nlp(text).ents:
@@ -111,18 +159,38 @@ class LocationExtractor:
             norm = _strip_accents(raw)
             if not norm or _JUNK.match(norm) or _HAS_DIGIT.search(norm) or _is_admin(norm):
                 continue
-            f = acc.get(norm)
+
+            hit = self.resolver.resolve(raw) if self.resolver else None
+            if hit is not None:
+                key = hit.geonameid
+                name, typ = hit.canonical, hit.type
+                verified, gid = True, hit.geonameid
+                province, region = hit.province, hit.region
+                match_type, confidence = hit.match_type, hit.score
+            else:
+                if verified_only:
+                    continue
+                key = "raw:" + norm
+                name, typ = raw, _classify(norm)
+                verified, gid = False, None
+                province = region = match_type = confidence = None
+
+            f = acc.get(key)
             if f is None:
-                f = acc[norm] = LocationFinding(
-                    name=raw, type=_classify(norm), count=0, mentions=[]
+                f = acc[key] = LocationFinding(
+                    name=name, type=typ, count=0, mentions=[], verified=verified,
+                    geonameid=gid, province=province, region=region,
+                    match_type=match_type, confidence=confidence,
                 )
             f.count += 1
             if len(f.mentions) < 10:
                 f.mentions.append({"text": raw, "start": ent.start_char, "end": ent.end_char})
 
-        findings = sorted(acc.values(), key=lambda x: (-x.count, x.name))
+        # verified first, then by frequency, then name — a clean list up top.
+        findings = sorted(acc.values(), key=lambda x: (not x.verified, -x.count, x.name))
         return {
             "_id": doc.get("_id"),
             "n_locations": len(findings),
+            "n_verified": sum(1 for f in findings if f.verified),
             "locations": [f.as_dict() for f in findings],
         }

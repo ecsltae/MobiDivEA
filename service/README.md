@@ -9,14 +9,16 @@ triage GUI) or a full ingestion JSON.
 - **Species** (`/extract-species`) — verified and normalized against the local
   Open Tree Taxonomy (misspellings corrected, non-taxa filtered, OTT ids
   attached). Deterministic, no model.
-- **Locations** (`/extract-locations`) — Spanish NER (spaCy `es_core_news_md`) +
-  light rule cleanup. Deterministic, no model.
+- **Locations** (`/extract-locations`) — Spanish NER (spaCy `es_core_news_md`)
+  for recognition, then **verified/normalized against a local GeoNames Spain
+  gazetteer** (canonical name, stable `geonameid`, accurate type, province/region
+  context) — the location analogue of OTT for species. Deterministic, no model.
 - **Free-text QA** (`/ask`) — a fine-tuned Spanish extractive-QA model for
   single-answer questions the two list-style extractors can't handle (project
   location, fieldwork dates, process start date, ...). See below.
 
-Built for Maite's 600-document metadata task and designed to sit next to Paul's
-triage `/classify` API (which classifies P/S but does not enumerate taxa).
+Built for Maite's 600-document metadata task and designed to sit next to the
+MobiDivEA triage `/classify` API (which classifies P/S but does not enumerate taxa).
 
 ## Shareable URL
 
@@ -65,8 +67,8 @@ document doesn't contain one) over the document, no retriever.
 
 - **Base model**: `mrm8488/roberta-base-bne-finetuned-sqac` (RoBERTa-BNE,
   pre-tuned on the Spanish QA Corpus), domain-adapted on the BOE docs.
-- **Training data** (`../qa_bert/prepare_data.py`, SQuAD-v2 format): Paul's
-  `/classify` evidence spans (theme → question, e.g. `wind_farm` → *"¿Qué tipo de
+- **Training data** (`../qa_bert/prepare_data.py`, SQuAD-v2 format): the MobiDivEA
+  triage `/classify` evidence spans (theme → question, e.g. `wind_farm` → *"¿Qué tipo de
   proyecto?"*), our species/location extractor mentions (entity-question spans),
   and an LLM-teacher pass over `../qa_bert/questions.txt` for the open,
   single-answer questions. No human-labelled QA pairs.
@@ -101,18 +103,36 @@ version. On `egaillac`'s machine the built index already exists at
 python ott_resolver.py build --json /path/to/ott_v3.7.2.json --db ott_index.sqlite
 ```
 
+## Prerequisite: build the locations gazetteer (one-off)
+
+The location verifier (`geonames_resolver.py`, vendored here, stdlib-only + optional
+rapidfuzz) reads a SQLite index built from the GeoNames **Spain** dump. The dump and
+the built index are **not in this repo** (~3 MB `ES.txt` → ~16 MB index, 57,673
+places) — regenerate with the free download:
+
+```bash
+curl -O https://download.geonames.org/export/dump/ES.zip && unzip ES.zip   # → ES.txt
+python geonames_resolver.py build --txt ES.txt --db geonames_index.sqlite
+```
+
+Only geographic feature classes are indexed (admin, populated places, hydrography,
+relief, parks, forest); GeoNames class S (hotels/museums/…) and R (roads) are
+excluded on purpose. If the index is absent the service still runs — locations just
+come back `verified:false`.
+
 ## Run
 
 ```bash
 pip install -r requirements.txt
 python -m spacy download es_core_news_md          # locations NER
 export SPECIES_QA_OTT_DB=/home/egaillac/MetaP/classifier/data/processed/ott_index.sqlite
+export SPECIES_QA_GEO_DB=/home/egaillac/MetaP/classifier/data/processed/geonames_index.sqlite
 ./start.sh                                         # binds 0.0.0.0:8010
 ```
 
 ### Persistent deployment (for a durable shareable URL)
 
-Run it under something that outlives your shell so Paul's GUI can rely on it:
+Run it under something that outlives your shell so the triage GUI can rely on it:
 
 ```bash
 # systemd (recommended; needs sudo once)
@@ -123,7 +143,7 @@ tmux new -d -s speciesqa '/home/egaillac/MetaP/species_qa_service/start.sh'
 ```
 
 Then confirm from another host: `curl http://egaillac.lan.text-analytics.ch:8010/health`.
-If it is not reachable from Paul's box, open TCP 8010 in the firewall.
+If it is not reachable from the triage host, open TCP 8010 in the firewall.
 
 `species-qa.service` already pins `SPECIES_QA_MODEL_DIR` at the current best QA
 checkpoint (`qa_bert/models/boe-qa-v2`) — after retraining, update that line (and
@@ -151,22 +171,45 @@ Post the whole ingestion JSON under `document` (extra fields ignored), or `text`
 ```
 
 ### `POST /extract-locations`
-Same request shape. Answers *"What locations?"* via Spanish NER + cleanup.
+Same request shape. Answers *"What locations?"* via Spanish NER, then verifies
+each span against the GeoNames gazetteer. Optional `verified_only` (default false)
+drops spans that don't resolve.
 
 ```jsonc
+// request
+{ "document": { "_id": "BOE-A-2020-5107", "text": "..." }, "verified_only": true }
+
 // response
-{ "_id": "BOE-A-2020-5107", "n_locations": 59,
+{ "_id": "BOE-A-2020-5107", "n_locations": 14, "n_verified": 14,
   "locations": [
-    { "name": "río Sosa", "type": "river", "count": 12,
-      "mentions": [ { "text": "río Sosa", "start": 1234, "end": 1242 } ] },
-    { "name": "Provincia de Huesca", "type": "province", "count": 4, "mentions": [ ... ] }
+    { "name": "Río Cinca", "type": "river", "verified": true,
+      "geonameid": "geonames:3125022", "province": null, "region": null,
+      "match_type": "exact", "confidence": 1.0, "count": 2,
+      "mentions": [ { "text": "río Cinca", "start": 1234, "end": 1243 } ] },
+    { "name": "Provincia de Huesca", "type": "province", "verified": true,
+      "geonameid": "geonames:3120513", "province": "Provincia de Huesca",
+      "region": "Aragón", "match_type": "exact", "confidence": 1.0, "count": 4,
+      "mentions": [ ... ] }
   ] }
 ```
 
-`type` ∈ river · water_body · relief · protected_area · trail · province ·
-municipality · place. This side has no verification backbone (unlike species/OTT),
-so expect more noise than species — a Spanish GeoNames gazetteer could later
-verify/normalize these. First location request loads the spaCy model (~1–2 s).
+`type` ∈ river · water_body · wetland · relief · pass · protected_area · forest ·
+region · province · comarca · municipality · place. `match_type` ∈ exact · core
+(head-noun stripped, e.g. "río X"→"X"). Unverified spans (default response) carry
+`verified:false` and null gazetteer fields. First location request loads the
+spaCy model (~1–2 s).
+
+**Quality (audited, no human gold — LLM-judged against document context over a
+60-doc sample):** of the NER spans that survive pre-filtering, ~22% verify; the
+**verified list is ~75% precise** (right place, right type) and the **unverified
+bucket is ~80–85% genuine noise** (taxa/habitat names spaCy mislabels as places,
+government bodies, fragments). `verified_only=true` is the clean list; the default
+keeps everything with a `verified` flag so no real place is silently dropped.
+Residual verified errors are mostly cross-province same-name collisions (e.g.
+"Sella" = an Asturias river *and* an Alicante town); recall gaps are places
+GeoNames Spain lacks (micro-toponyms, small *arroyos*, *vías pecuarias*, truncated
+protected-area names, foreign places). See Roadmap for the geographic-coherence
+fix.
 
 ### `POST /extract-species/batch`
 Body: a JSON list of documents. Returns `{ "results": [...], "count": N }`.
@@ -213,10 +256,12 @@ a shared origin is required.
 
 ## Roadmap
 
-- **Location precision** — currently off-the-shelf spaCy `es_core_news_md` + rule
-  cleanup (noisier than species). Upgrade path: verify/normalize against a Spanish
-  GeoNames gazetteer (the way species are verified against OTT), and/or move to
-  `es_core_news_lg` / GLiNER.
+- **Location geographic coherence** — the GeoNames gazetteer verifier (done)
+  lifted the verified list to ~75% precision; the remaining errors are
+  cross-province same-name collisions. Next: anchor on a document's unambiguous
+  province/region hits and prefer same-province candidates for the ambiguous ones.
+  Also consider `es_core_news_lg` / GLiNER for recognition, and cross-referencing
+  the species list to drop taxon leakage ("Olea" the genus vs the hamlet).
 - **Common-name species** — docs that name taxa only by Spanish common name
   (e.g. "milano", "aves esteparias") resolve to nothing; add a Spanish
   common-name → taxon gazetteer.

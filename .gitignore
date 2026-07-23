@@ -12,6 +12,12 @@ qa_bert/models/
 service/ott_index.sqlite
 service/ott_v3.7.2.json
 
+# GeoNames Spain gazetteer: source dump + built SQLite index (regenerate via
+# geonames_resolver.py build) — see service/README.md "locations gazetteer".
+service/geonames_index.sqlite
+service/ES.txt
+service/ES.zip
+
 __pycache__/
 *.pyc
 .venv/

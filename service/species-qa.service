@@ -7,6 +7,7 @@ Type=simple
 User=egaillac
 WorkingDirectory=/home/egaillac/MetaP/species_qa_service
 Environment=SPECIES_QA_OTT_DB=/home/egaillac/MetaP/classifier/data/processed/ott_index.sqlite
+Environment=SPECIES_QA_GEO_DB=/home/egaillac/MetaP/classifier/data/processed/geonames_index.sqlite
 Environment=SPECIES_QA_MODEL_DIR=/home/egaillac/MetaP/qa_bert/models/boe-qa-v2
 Environment=TOKENIZERS_PARALLELISM=false
 Environment=HOST=0.0.0.0

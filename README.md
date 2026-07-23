@@ -17,8 +17,9 @@ training_QA-maite.csv    doc-level gold flags: is_taxa, is_location, is_primary_
 service/                 FastAPI service — the deployed deliverable
   app.py                   /extract-species, /extract-locations, /ask, /health
   extractor.py             species: candidates (italics ∪ text scan) → OTT-verify
-  location_extractor.py    locations: spaCy Spanish NER + rule cleanup
-  ott_resolver.py          vendored OTT name resolver (stdlib-only)
+  location_extractor.py    locations: spaCy Spanish NER → GeoNames verification
+  ott_resolver.py          vendored OTT name resolver (species, stdlib-only)
+  geonames_resolver.py     vendored GeoNames Spain gazetteer resolver (locations)
   README.md                full API docs, validation numbers, deployment steps
 qa_bert/                 training pipeline for the /ask model (not run automatically)
   PLAN.md                  design notes: why extractive QA, data sources, model choice
@@ -47,6 +48,9 @@ Large, regeneratable artifacts were deliberately left out (see `.gitignore`):
 - **OTT taxonomy dump + built SQLite index** (2.4GB source JSON → 1.0GB index) that
   `service/ott_resolver.py` needs for species verification. See
   `service/README.md` → "Prerequisite: build the OTT index".
+- **GeoNames Spain gazetteer + built SQLite index** (~3MB `ES.txt` → ~16MB index)
+  that `service/geonames_resolver.py` needs for location verification. Free
+  download; see `service/README.md` → "Prerequisite: build the locations gazetteer".
 
 ## Current deployment
 
@@ -61,5 +65,6 @@ http://egaillac.lan.text-analytics.ch:8010      (API docs at /)
 
 If you want this repo's checkout to *become* the deployment source of truth,
 update the paths in `service/species-qa.service` (`WorkingDirectory`,
-`ExecStart`, and the `SPECIES_QA_OTT_DB` / `SPECIES_QA_MODEL_DIR` env vars) to
-point here, then reinstall the unit as described in `service/README.md`.
+`ExecStart`, and the `SPECIES_QA_OTT_DB` / `SPECIES_QA_GEO_DB` /
+`SPECIES_QA_MODEL_DIR` env vars) to point here, then reinstall the unit as
+described in `service/README.md`.
