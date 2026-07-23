@@ -40,13 +40,13 @@ doc_stride 128); best span across windows at inference.
 We have 639 docs but no QA pairs. Four complementary sources (assembled by
 `prepare_data.py`):
 
-1. **Reuse Paul's evidence offsets (free, high quality).** Paul's `/classify`
+1. **Reuse the triage evidence offsets (free, high quality).** The triage `/classify`
    returns evidence features as spans with char offsets and done/proposed/cited
    tags. Each theme maps to a question, e.g.
    `wind_farm` → *"¿Qué tipo de proyecto?"*, `conducted_surveys` →
    *"¿Qué trabajo de campo se realizó?"*, `reported_effort` →
    *"¿Cuál fue el esfuerzo de muestreo?"*. His matched span (with offset) is a
-   ready-made answer span. **This is the concrete reuse of Paul's system for us.**
+   ready-made answer span. **This is the concrete reuse of the triage system for us.**
 2. **Our extractors (free).** Species (OTT) and location (NER) mentions already
    carry offsets → training spans for *"¿qué especie…?"* / *"¿qué lugar…?"* style
    questions (one example per mention).
@@ -64,12 +64,12 @@ when a doc doesn't contain it.
 
 - **The example-questions list** (drives sources 1 & 3). Drop it at
   `qa_bert/questions.txt` (one question per line; optional `theme` after a tab to
-  map to Paul's features).
+  map to the triage features).
 
 ## Pipeline / files
 
 - `prepare_data.py` — build `data/squad_train.json` / `squad_dev.json` from the
-  four sources above (Paul reuse + extractors implemented; LLM-teacher reads
+  four sources above (triage reuse + extractors implemented; LLM-teacher reads
   `questions.txt` + an LLM endpoint).
 - `train_qa.py` — HF `AutoModelForQuestionAnswering` fine-tune on **GPU**
   (`CUDA_VISIBLE_DEVICES`), sliding-window features, saves to `models/`.

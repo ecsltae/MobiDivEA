@@ -2,7 +2,7 @@
 prepare_data.py — build a SQuAD-v2 QA dataset from the 639 BOE docs.
 
 Four sources (see PLAN.md):
-  1. Paul's /classify evidence spans  → answers for themed questions  [implemented]
+  1. Triage /classify evidence spans  → answers for themed questions  [implemented]
   2. our species/location extractors  → answers for entity questions  [implemented]
   3. LLM teacher over questions.txt   → answers for open questions     [runs if
                                                                         questions.txt
@@ -28,8 +28,8 @@ HERE = Path(__file__).resolve().parent
 DOCS_DIR = Path(os.environ.get("BOE_DOCS", "/home/egaillac/BioMoQA-RAG/sample_revised"))
 SERVICE = Path("/home/egaillac/MetaP/species_qa_service")
 
-# Paul's evidence-feature key → a natural-language question. His matched span (with
-# offsets) becomes the answer. Extend as his feature set grows.
+# Triage evidence-feature key → a natural-language question. Its matched span (with
+# offsets) becomes the answer. Extend as the feature set grows.
 THEME_QUESTIONS = {
     "wind_farm":            "¿Qué tipo de proyecto se evalúa?",
     "solar_pv":             "¿Qué tipo de proyecto se evalúa?",
@@ -58,9 +58,9 @@ def _squad_qa(qid: str, question: str, text: str, answer: str, start: int) -> di
     }
 
 
-# ── Source 1: Paul's evidence spans ────────────────────────────────────────────
+# ── Source 1: triage evidence spans ────────────────────────────────────────────
 
-def from_paul(classify_result: dict) -> List[dict]:
+def from_triage(classify_result: dict) -> List[dict]:
     """Map a /classify result's `features` (span + offsets) to QA examples."""
     text = classify_result.get("text", "")
     out = []
@@ -203,7 +203,7 @@ def run_teacher(model: str, base_url: str) -> None:
             print(f"  [{k}/{len(todo)}] {doc.get('_id')} {n_ans}/{len(questions)} answered ({_t.time()-t0:.0f}s)", flush=True)
 
 
-def build(use_paul: bool, dev_frac: float = 0.1) -> None:
+def build(use_triage: bool, dev_frac: float = 0.1) -> None:
     sys.path.insert(0, str(SERVICE))
     from extractor import SpeciesExtractor
     from location_extractor import LocationExtractor
@@ -220,11 +220,11 @@ def build(use_paul: bool, dev_frac: float = 0.1) -> None:
                 examples += json.loads(line)["examples"]
             except Exception:
                 pass
-    # Paul reuse: expects cached classify results at data/paul_classify.json
-    paul_cache = HERE / "data" / "paul_classify.json"
-    if use_paul and paul_cache.exists():
-        for res in json.load(open(paul_cache)):
-            examples += from_paul(res)
+    # Triage reuse: expects cached classify results at data/triage_classify.json
+    triage_cache = HERE / "data" / "triage_classify.json"
+    if use_triage and triage_cache.exists():
+        for res in json.load(open(triage_cache)):
+            examples += from_triage(res)
 
     # Split by DOCUMENT, not per-example. Every example id is "<doc_id>::<tag>",
     # so grouping on that prefix keeps all of a BOE document's windows/QAs on the
@@ -258,11 +258,11 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--teacher", action="store_true", help="run the LLM teacher pass (slow)")
     ap.add_argument("--build", action="store_true", help="assemble squad_{train,dev}.json")
-    ap.add_argument("--no-paul", action="store_true")
+    ap.add_argument("--no-triage", action="store_true")
     ap.add_argument("--model", default=os.environ.get("TEACHER_LLM_MODEL", "qwen3:32b"))
     ap.add_argument("--url", default=os.environ.get("TEACHER_LLM_URL", "http://localhost:11434"))
     a = ap.parse_args()
     if a.teacher:
         run_teacher(a.model, a.url)
     if a.build or not a.teacher:
-        build(use_paul=not a.no_paul)
+        build(use_triage=not a.no_triage)
