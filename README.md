@@ -17,9 +17,12 @@ training_QA-maite.csv    doc-level gold flags: is_taxa, is_location, is_primary_
 service/                 FastAPI service — the deployed deliverable
   app.py                   /extract-species, /extract-locations, /ask, /health
   extractor.py             species: candidates (italics ∪ text scan) → OTT-verify
-  location_extractor.py    locations: spaCy Spanish NER → GeoNames verification
+  location_extractor.py    locations: localización-section NER → GeoNames verify
   ott_resolver.py          vendored OTT name resolver (species, stdlib-only)
   geonames_resolver.py     vendored GeoNames Spain gazetteer resolver (locations)
+  vernacular_resolver.py   Spanish common-name → scientific detector (species)
+  vernacular_es.tsv        common-name gazetteer (Wikidata-derived, ~24k names)
+  build_vernacular.py      rebuild vernacular_es.tsv from a Wikidata dump
   README.md                full API docs, validation numbers, deployment steps
 qa_bert/                 training pipeline for the /ask model (not run automatically)
   PLAN.md                  design notes: why extractive QA, data sources, model choice

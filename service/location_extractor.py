@@ -77,6 +77,36 @@ _JUNK = re.compile(r"^[\W\d]+$|^.{1,2}$", re.IGNORECASE)
 # "2000") do — reject anything containing a digit anywhere.
 _HAS_DIGIT = re.compile(r"\d")
 
+# ── Location-section detection ───────────────────────────────────────────────────
+# BOE environmental resolutions carry the place information under a heading like
+# "Objeto, descripción y localización del proyecto." / "Localización del proyecto."
+# / "Ubicación del proyecto.". Running NER over the WHOLE document floods the
+# output with false positives (taxa lists, admin bodies, citations); restricting to
+# this section is far cleaner. If no such heading exists (~22% of docs), we fall
+# back to the whole document so nothing is lost.
+_LOC_HEADING = re.compile(
+    r"(?:descripci[oó]n\s+y\s+localizaci[oó]n"
+    r"|localizaci[oó]n\s+y\s+descripci[oó]n"
+    r"|localizaci[oó]n"
+    r"|ubicaci[oó]n"
+    r"|emplazamiento)"
+    r"\s+del?\s+proyecto",
+    re.IGNORECASE,
+)
+# Start of the NEXT section — where a location section ends. A heading-like line:
+# a dash/number/ordinal bullet, or a known follow-on section title, at line start.
+_NEXT_SECTION = re.compile(
+    r"(?:^|\n)\s*(?:"
+    r"[–—\-•·]\s+[A-ZÁÉÍÓÚ]"                       # "– Promotor…", "- Tramitación…"
+    r"|\d{1,2}(?:\.\d{1,2})*[.\)]\s+[A-ZÁÉÍÓÚ]"    # "2. …", "3.1 …"
+    r"|(?:Primero|Segundo|Tercero|Cuarto|Quinto|Sexto|S[eé]ptimo|Octavo|Noveno|D[eé]cimo)\b"
+    r"|(?:Promotor|Tramitaci[oó]n|An[aá]lisis|Resumen|Alternativas?|"
+    r"Caracterizaci[oó]n|Elementos\s+ambientales|Antecedentes|"
+    r"Fundamentos\s+de\s+[Dd]erecho|Consultas|Resoluci[oó]n)\b"
+    r")",
+)
+_SECTION_MAXLEN = 2600   # cap a section window so a missing boundary can't run away
+
 
 def _classify(name_norm: str) -> str:
     head = name_norm.split()
@@ -149,47 +179,78 @@ class LocationExtractor:
             except Exception as e:  # index not built / unreadable
                 print(f"[location_extractor] gazetteer disabled: {e}", flush=True)
 
+    @staticmethod
+    def _location_sections(text: str) -> List[tuple]:
+        """Windows of text under a "localización/ubicación del proyecto" heading,
+        each running to the next section boundary (capped). Returns [(abs_start,
+        section_text), ...] merged; empty if the document has no such heading."""
+        raw: List[list] = []
+        for m in _LOC_HEADING.finditer(text):
+            start = m.end()
+            nb = _NEXT_SECTION.search(text, start)
+            end = min(nb.start() if nb else len(text), start + _SECTION_MAXLEN)
+            if end > start:
+                raw.append([start, end])
+        raw.sort()
+        merged: List[list] = []
+        for s, e in raw:
+            if merged and s <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], e)
+            else:
+                merged.append([s, e])
+        return [(s, text[s:e]) for s, e in merged]
+
     def extract(self, doc: dict, verified_only: bool = False) -> dict:
         text = doc.get("text") or ""
+        sections = self._location_sections(text)
+        # Restrict NER to the location section(s) when present (far less noise);
+        # otherwise scan the whole document so nothing is lost.
+        chunks = sections if sections else [(0, text)]
+        scope = "section" if sections else "document"
+
         acc: Dict[str, LocationFinding] = {}
-        for ent in self.nlp(text).ents:
-            if ent.label_ not in self.labels:
-                continue
-            raw = ent.text.strip()
-            norm = _strip_accents(raw)
-            if not norm or _JUNK.match(norm) or _HAS_DIGIT.search(norm) or _is_admin(norm):
-                continue
-
-            hit = self.resolver.resolve(raw) if self.resolver else None
-            if hit is not None:
-                key = hit.geonameid
-                name, typ = hit.canonical, hit.type
-                verified, gid = True, hit.geonameid
-                province, region = hit.province, hit.region
-                match_type, confidence = hit.match_type, hit.score
-            else:
-                if verified_only:
+        for base, chunk in chunks:
+            for ent in self.nlp(chunk).ents:
+                if ent.label_ not in self.labels:
                     continue
-                key = "raw:" + norm
-                name, typ = raw, _classify(norm)
-                verified, gid = False, None
-                province = region = match_type = confidence = None
+                raw = ent.text.strip()
+                norm = _strip_accents(raw)
+                if not norm or _JUNK.match(norm) or _HAS_DIGIT.search(norm) or _is_admin(norm):
+                    continue
 
-            f = acc.get(key)
-            if f is None:
-                f = acc[key] = LocationFinding(
-                    name=name, type=typ, count=0, mentions=[], verified=verified,
-                    geonameid=gid, province=province, region=region,
-                    match_type=match_type, confidence=confidence,
-                )
-            f.count += 1
-            if len(f.mentions) < 10:
-                f.mentions.append({"text": raw, "start": ent.start_char, "end": ent.end_char})
+                hit = self.resolver.resolve(raw) if self.resolver else None
+                if hit is not None:
+                    key = hit.geonameid
+                    name, typ = hit.canonical, hit.type
+                    verified, gid = True, hit.geonameid
+                    province, region = hit.province, hit.region
+                    match_type, confidence = hit.match_type, hit.score
+                else:
+                    if verified_only:
+                        continue
+                    key = "raw:" + norm
+                    name, typ = raw, _classify(norm)
+                    verified, gid = False, None
+                    province = region = match_type = confidence = None
+
+                f = acc.get(key)
+                if f is None:
+                    f = acc[key] = LocationFinding(
+                        name=name, type=typ, count=0, mentions=[], verified=verified,
+                        geonameid=gid, province=province, region=region,
+                        match_type=match_type, confidence=confidence,
+                    )
+                f.count += 1
+                if len(f.mentions) < 10:
+                    f.mentions.append(
+                        {"text": raw, "start": base + ent.start_char, "end": base + ent.end_char}
+                    )
 
         # verified first, then by frequency, then name — a clean list up top.
         findings = sorted(acc.values(), key=lambda x: (not x.verified, -x.count, x.name))
         return {
             "_id": doc.get("_id"),
+            "scope": scope,   # "section" = restricted to the localización section; "document" = whole-doc fallback
             "n_locations": len(findings),
             "n_verified": sum(1 for f in findings if f.verified),
             "locations": [f.as_dict() for f in findings],

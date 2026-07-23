@@ -135,12 +135,24 @@ class ExtractRequest(BaseModel):
     text: Optional[str] = None
     italicized_terms: Optional[List[str]] = None
     scan_text: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "Also scan the raw text for non-italicised binomials. "
+            "Also scan the raw text for non-italicised binomials — ON by default "
+            "so species that are not italicised in the source are still caught. "
             "Precision/recall dial measured on the 639 BOE docs vs the is_taxa "
-            "flag: false → P=0.99, R=0.85 (curated italics only); "
-            "true → P=0.91, R=0.99 (recovers non-italicised species, adds noise)."
+            "flag: true → P=0.91, R=0.99 (default; recovers non-italicised "
+            "species); false → P=0.99, R=0.85 (curated italics only, higher "
+            "precision). Either way, every candidate is OTT-verified."
+        ),
+    )
+    include_vernacular: bool = Field(
+        default=True,
+        description=(
+            "Also detect Spanish vernacular (common) names — e.g. 'milano real' "
+            "→ Milvus milvus — via a local Wikidata-derived gazetteer, resolved to "
+            "the same OTT backbone. Tagged `source: vernacular` / "
+            "`match_type: vernacular` so they can be reviewed separately (common "
+            "names are more ambiguous than binomials). Set false to skip them."
         ),
     )
     verified_only: bool = Field(
@@ -205,6 +217,10 @@ class LocationItem(BaseModel):
 
 class LocationResponse(BaseModel):
     id: Optional[str] = Field(default=None, alias="_id")
+    scope: str = Field(
+        description="'section' = NER restricted to the document's localización "
+        "del proyecto section; 'document' = whole-doc fallback (no such section)."
+    )
     n_locations: int
     n_verified: int
     locations: List[LocationItem]
@@ -258,9 +274,14 @@ def extract_locations(req: ExtractRequest) -> dict:
 
 @app.post("/extract-species", response_model=ExtractResponse, tags=["Species"])
 def extract_species(req: ExtractRequest) -> dict:
-    """Extract OTT-verified species from a single document."""
+    """Extract OTT-verified species from a single document. Candidates come from
+    italics, a raw-text binomial scan (`scan_text`, on by default), and a Spanish
+    vernacular-name gazetteer (`include_vernacular`, on by default). `sources` on
+    each result records which paths found it (italics / text / vernacular)."""
     ex = get_extractor()
-    return ex.extract(req.to_doc(), scan_text=req.scan_text)
+    return ex.extract(
+        req.to_doc(), scan_text=req.scan_text, include_vernacular=req.include_vernacular
+    )
 
 
 @app.post("/extract-species/batch", tags=["Species"])

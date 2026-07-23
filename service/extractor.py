@@ -25,11 +25,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-# Vendored resolver (stdlib-only, no heavy deps) — ott_resolver.py, alongside this file.
+# Vendored resolvers (stdlib-only, no heavy deps) — alongside this file.
 _THIS_DIR = str(Path(__file__).resolve().parent)
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 from ott_resolver import OTTResolver  # noqa: E402
+
+# Spanish vernacular (common) name gazetteer, alongside this file.
+try:
+    from vernacular_resolver import VernacularResolver  # noqa: E402
+except Exception:  # pragma: no cover
+    VernacularResolver = None  # type: ignore
 
 # Ranks we accept as "a species finding". Genus is kept (docs often name a genus
 # only); anything above genus is dropped as too coarse to be a taxon mention.
@@ -85,12 +91,21 @@ class SpeciesExtractor:
         db_path: Optional[str] = None,
         scan_text: bool = True,
         accept_ranks: Optional[set] = None,
+        include_vernacular: bool = True,
     ):
         self.resolver = resolver or OTTResolver(
             db_path or os.environ.get("SPECIES_QA_OTT_DB") or None
         )
         self.scan_text = scan_text
         self.accept_ranks = accept_ranks or _DEFAULT_ACCEPT_RANKS
+
+        # Spanish common-name gazetteer (optional; degrade gracefully if absent).
+        self.vernacular = None
+        if include_vernacular and VernacularResolver is not None:
+            try:
+                self.vernacular = VernacularResolver()
+            except Exception as e:  # gazetteer not built
+                print(f"[extractor] vernacular disabled: {e}", flush=True)
 
     # -- candidate generation --------------------------------------------------
 
@@ -136,31 +151,56 @@ class SpeciesExtractor:
 
     # -- main ------------------------------------------------------------------
 
-    def extract(self, doc: dict, scan_text: Optional[bool] = None) -> dict:
-        """Extract species. `scan_text` overrides the instance default for this
-        call only (None → use self.scan_text), so concurrent requests with
-        different settings don't race on shared state."""
+    def extract(
+        self, doc: dict, scan_text: Optional[bool] = None,
+        include_vernacular: Optional[bool] = None,
+    ) -> dict:
+        """Extract species. `scan_text` / `include_vernacular` override the
+        instance defaults for this call only (None → use the instance value), so
+        concurrent requests with different settings don't race on shared state."""
         acc: Dict[str, _Acc] = {}
+
+        def _add(raw, source, spans, hit):
+            a = acc.get(hit.ott_id)
+            if a is None:
+                a = acc[hit.ott_id] = _Acc(hit=hit)
+            a.sources.add(source)
+            for (s, e) in (spans or [(None, None)]):
+                key = (raw, s)
+                if key not in a.seen:
+                    a.seen.add(key)
+                    a.mentions.append({"text": raw, "start": s, "end": e})
+            if hit.score > a.hit.score:
+                a.hit = hit
+
         for raw, source, allow_fuzzy, spans in self._candidates(doc, scan_text):
             hit = self.resolver.resolve(raw, fuzzy=allow_fuzzy)
             if not hit:
                 continue
             if self.accept_ranks and hit.rank and hit.rank.lower() not in self.accept_ranks:
                 continue
-            a = acc.get(hit.ott_id)
-            if a is None:
-                a = acc[hit.ott_id] = _Acc(hit=hit)
-            a.sources.add(source)
-            # one mention per located occurrence; fall back to an offset-less
-            # mention when the raw string is not found verbatim in the text.
-            for (s, e) in (spans or [(None, None)]):
-                key = (raw, s)
-                if key not in a.seen:
-                    a.seen.add(key)
-                    a.mentions.append({"text": raw, "start": s, "end": e})
-            # prefer the strongest match_type seen for this concept
-            if hit.score > a.hit.score:
-                a.hit = hit
+            _add(raw, source, spans, hit)
+
+        # Vernacular pass: scan for Spanish common names, resolve the paired
+        # scientific name through OTT. Mentions keep the common-name text but the
+        # concept is the same OTT id, so a species named both in italics and by
+        # common name merges into one finding (sources = {italics, vernacular}).
+        use_vern = self.vernacular is not None and (
+            include_vernacular if include_vernacular is not None else True
+        )
+        if use_vern:
+            text = doc.get("text") or ""
+            for h in self.vernacular.scan(text):
+                hit = None
+                for sci in h["scientific"]:
+                    hit = self.resolver.resolve(sci, fuzzy=False)
+                    if hit:
+                        break
+                if not hit:
+                    continue
+                if self.accept_ranks and hit.rank and hit.rank.lower() not in self.accept_ranks:
+                    continue
+                _add(h["common"], "vernacular", [(h["start"], h["end"])], hit)
 
         findings = [
             SpeciesFinding(
